@@ -120,6 +120,133 @@ class Print(nn.Module):
         print(self.msg, x.shape)
         return x
 
+class CIFAR10(Dataset):
+    """Customized `CIFAR10 <https://www.cs.toronto.edu/~kriz/cifar.html>`_ Dataset.
+
+    Read the following descriptions on the dataset directory structure carefully to implement this `CIFAR10` class.
+
+    In `dataset/cifar10` directory, you have `train` and `test` directories,
+    each of which contains CIFAR10 images for the train and test, respectively.
+
+    Also, there are 10 sub-directories (from `0` to `9`) in `train` and `test` directories, 
+    where the name of each sub-directory is specified by CIFAR10 classes and 
+    each sub-directory contains images for those classes. 
+
+    For train data, there are 10*4,800=48,000 images in total (4,800 images for each class), 
+    whereas test data consists of 10*1,200=12,000 images (1,200 images for each class). 
+
+    For example,
+
+    datset
+        `-- cifar10
+            |-- train
+                |-- 0
+                    |-- 00001.png
+                    |-- ...
+                    `-- 04800.png
+                |-- ...
+                `-- 9
+                    |-- 00001.png
+                    |-- ...
+                    `-- 04800.png
+            `-- test
+                |-- 0
+                    |-- 04801.png
+                    |-- ...
+                    `-- 06000.png
+                |-- ...
+                `-- 9
+                    |-- 04801.png
+                    |-- ...
+                    `-- 06000.png
+
+    """
+    def __init__(self, root, train=True, transform=None):
+        super(CIFAR10, self).__init__()
+        """
+        Instructions: 
+            1. Assume that `root` equals to `dataset/cifar10`.
+
+            2. If `train` is True, then parse all paths of train images, and keep them in the list `self.paths`. 
+               E.g.) self.paths = ['dataset/cifar10/train/0/00001.png', ..., 'dataset/cifar10/train/9/4800.png']
+               Also, the length of `self.paths` list should be 48,000.
+                    
+            3. If `train` is False, then parse all paths of test images, and keep them in the list `self.paths`. 
+               E.g.) self.paths = ['dataset/cifar10/test/0/04801.png', ..., 'dataset/cifar10/test/9/06000.png']
+               Also, the length of `self.paths` list should be 12,000.
+
+        Args:
+            root (string): Root directory of dataset where directory ``cifar10`` exists.
+            train (bool, optional): If True, creates dataset from training set, otherwise
+                creates from test set. (default: True)
+            transform (callable, optional): A function/transform that takes in an PIL image
+                and returns a transformed version. E.g, ``transforms.RandomCrop`` (default: None)
+        """
+        self.transform = transform 
+
+        ################################
+        ## P4.1. Write your code here ##
+        img_num = lambda id: '0'*(5-len(str(id+1))) + str(id+1)
+        num_paths = 48000 if train else 12000
+        num_img_in_category = 4800 if train else 1200
+
+        self.paths = ['{}/{}/{}/{}.png'.format(root, 'train' if train else 'test', path_id//num_img_in_category, \
+                                               img_num(path_id%num_img_in_category if train else path_id%num_img_in_category+4800)) for path_id in range(num_paths)]
+        ################################
+
+        assert isinstance(self.paths, (list,)), 'Wrong type. self.paths should be list.'
+        if train is True:
+            assert len(self.paths) == 48000, 'There are 48,000 train images, but you have gathered %d image paths' % len(self.paths)
+        else:
+            assert len(self.paths) == 12000, 'There are 12,000 test images, but you have gathered %d image paths' % len(self.paths)
+
+    def __getitem__(self, idx):
+        """
+        Instructions:
+            1. Given a path of an image, which is grabbed by self.paths[idx], infer the class label of the image.
+            2. Convert the inferred class label into torch.LongTensor with shape (), and keep it in `label` variable.` 
+
+        Args:
+            idx (int): Index of self.paths
+
+        Returns:
+            image (torch.FloatTensor): An image tensor of shape (3, 32, 32).
+            label (torch.LongTensor): A label tensor of shape ().
+        """
+
+        path = self.paths[idx] 
+        # P4.2. Infer class label from `path`,
+        # write your code here.
+        label = torch.tensor(int(path.split('/')[3]))
+
+        # P4.3. Convert it to torch.LongTensor with shape ().
+        # label = write_your_code_here (one-liner).
+        label = label.long() # Note: you must erase this line
+
+        image = Image.open(path)
+        if self.transform is not None:
+            image = self.transform(image) 
+
+        return image, label
+
+    def __len__(self):
+        return len(self.paths)
+
+def get_dataloader(args):
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        ])
+    train_dataset = CIFAR10(args.dataroot, train=True, transform=transform)
+    test_dataset = CIFAR10(args.dataroot, train=False, transform=transform)
+
+    # P4.4. Use `DataLoader` module for mini-batching train and test datasets.
+    # train_dataloader = DataLoader(WRITE_YOUR_CODE_HERE, batch_size=args.batch_size, shuffle=True, drop_last=True)
+    # test_dataloader = DataLoader(WRITE_YOUR_CODE_HERE, batch_size=args.batch_size, shuffle=False, drop_last=False)
+    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False)
+
+    return train_dataloader, test_dataloader
+
 class MyNetwork(nn.Module):
     def __init__(self, nf, resblock_type='plain', num_resblocks=[1, 1, 1], use_bn=False):
         super(MyNetwork, self).__init__()
@@ -257,149 +384,20 @@ class MyNetwork(nn.Module):
         """
         ################################
         ## P3.4. Write your code here ##
-        lambda_reg = 0.01
-        l2_reg = 0
-        for param in self.model.parameters():
-            l2_reg += torch.norm(param)
+        # lambda_reg = 0.01
+        # l2_reg = 0
+        # for param in self.model.parameters():
+        #     l2_reg += torch.norm(param)
 
         loss = nn.CrossEntropyLoss()
-        loss = loss(logit, y) + lambda_reg * l2_reg
+        loss = loss(logit, y) #+ lambda_reg * l2_reg
         ################################
         return loss
 
-class CIFAR10(Dataset):
-    """Customized `CIFAR10 <https://www.cs.toronto.edu/~kriz/cifar.html>`_ Dataset.
-
-    Read the following descriptions on the dataset directory structure carefully to implement this `CIFAR10` class.
-
-    In `dataset/cifar10` directory, you have `train` and `test` directories,
-    each of which contains CIFAR10 images for the train and test, respectively.
-
-    Also, there are 10 sub-directories (from `0` to `9`) in `train` and `test` directories, 
-    where the name of each sub-directory is specified by CIFAR10 classes and 
-    each sub-directory contains images for those classes. 
-
-    For train data, there are 10*4,800=48,000 images in total (4,800 images for each class), 
-    whereas test data consists of 10*1,200=12,000 images (1,200 images for each class). 
-
-    For example,
-
-    datset
-        `-- cifar10
-            |-- train
-                |-- 0
-                    |-- 00001.png
-                    |-- ...
-                    `-- 04800.png
-                |-- ...
-                `-- 9
-                    |-- 00001.png
-                    |-- ...
-                    `-- 04800.png
-            `-- test
-                |-- 0
-                    |-- 04801.png
-                    |-- ...
-                    `-- 06000.png
-                |-- ...
-                `-- 9
-                    |-- 04801.png
-                    |-- ...
-                    `-- 06000.png
-
-    """
-    def __init__(self, root, train=True, transform=None):
-        super(CIFAR10, self).__init__()
-        """
-        Instructions: 
-            1. Assume that `root` equals to `dataset/cifar10`.
-
-            2. If `train` is True, then parse all paths of train images, and keep them in the list `self.paths`. 
-               E.g.) self.paths = ['dataset/cifar10/train/0/00001.png', ..., 'dataset/cifar10/train/9/4800.png']
-               Also, the length of `self.paths` list should be 48,000.
-                    
-            3. If `train` is False, then parse all paths of test images, and keep them in the list `self.paths`. 
-               E.g.) self.paths = ['dataset/cifar10/test/0/04801.png', ..., 'dataset/cifar10/test/9/06000.png']
-               Also, the length of `self.paths` list should be 12,000.
-
-        Args:
-            root (string): Root directory of dataset where directory ``cifar10`` exists.
-            train (bool, optional): If True, creates dataset from training set, otherwise
-                creates from test set. (default: True)
-            transform (callable, optional): A function/transform that takes in an PIL image
-                and returns a transformed version. E.g, ``transforms.RandomCrop`` (default: None)
-        """
-        self.transform = transform 
-
-        ################################
-        ## P4.1. Write your code here ##
-        img_num = lambda id: '0'*(5-len(str(id+1))) + str(id+1)
-        num_paths = 48000 if train else 12000
-        num_img_in_category = 4800 if train else 1200
-
-        self.paths = ['{}/{}/{}/{}.png'.format(root, 'train' if train else 'test', path_id//num_img_in_category, \
-                                               img_num(path_id%num_img_in_category if train else path_id%num_img_in_category+4800)) for path_id in range(num_paths)]
-        ################################
-
-        assert isinstance(self.paths, (list,)), 'Wrong type. self.paths should be list.'
-        if train is True:
-            assert len(self.paths) == 48000, 'There are 48,000 train images, but you have gathered %d image paths' % len(self.paths)
-        else:
-            assert len(self.paths) == 12000, 'There are 12,000 test images, but you have gathered %d image paths' % len(self.paths)
-
-    def __getitem__(self, idx):
-        """
-        Instructions:
-            1. Given a path of an image, which is grabbed by self.paths[idx], infer the class label of the image.
-            2. Convert the inferred class label into torch.LongTensor with shape (), and keep it in `label` variable.` 
-
-        Args:
-            idx (int): Index of self.paths
-
-        Returns:
-            image (torch.FloatTensor): An image tensor of shape (3, 32, 32).
-            label (torch.LongTensor): A label tensor of shape ().
-        """
-
-        path = self.paths[idx] 
-        # P4.2. Infer class label from `path`,
-        # write your code here.
-        label = torch.tensor(int(path.split('/')[3]))
-
-        # P4.3. Convert it to torch.LongTensor with shape ().
-        # label = write_your_code_here (one-liner).
-        label = label.long() # Note: you must erase this line
-
-        image = Image.open(path)
-        if self.transform is not None:
-            image = self.transform(image) 
-
-        return image, label
-
-    def __len__(self):
-        return len(self.paths)
-
-def get_dataloader(args):
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        ])
-    train_dataset = CIFAR10(args.dataroot, train=True, transform=transform)
-    test_dataset = CIFAR10(args.dataroot, train=False, transform=transform)
-
-    # P4.4. Use `DataLoader` module for mini-batching train and test datasets.
-    # train_dataloader = DataLoader(WRITE_YOUR_CODE_HERE, batch_size=args.batch_size, shuffle=True, drop_last=True)
-    # test_dataloader = DataLoader(WRITE_YOUR_CODE_HERE, batch_size=args.batch_size, shuffle=False, drop_last=False)
-    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False)
-
-    return train_dataloader, test_dataloader
-
-###################################################################################################
+##############################################`#####################################################
 ###################################################################################################
 
 root = './src'
-tag_num = 0
-
 
 # Configurations & Hyper-parameters
 
@@ -414,39 +412,73 @@ args.ckpt_iter = 100                 # how frequently checkpoints are saved.
 args.ckpt_reload = 'best'            # which checkpoint to re-load.
 args.gpu = True                      # whether or not to use gpu. 
 
-# network options
-args.num_filters = 64                # number of output channels in the first nn.Conv2d module in MyNetwork.
-args.resblock_type = 'plain'         # type of residual block. ('plain' | 'bottleneck').
-args.num_resblocks = [1, 1, 1]       # number of residual blocks in each Residual Layer.
-args.use_bn = False                  # whether or not to use batch normalization.
-
 # data options
 args.dataroot = 'dataset/cifar10'    # where CIFAR10 images exist.
 args.batch_size = 64                 # number of mini-batch size.
-
-# training options
-args.lr = 0.0001                     # learning rate.
-args.epoch = 50                      # training epoch.
 
 # tensorboard options
 args.tensorboard = True             # whether or not to use tensorboard logging.
 args.log_dir = 'logs'               # to which tensorboard logs will be saved.
 args.log_iter = 100                 # how frequently logs are saved.
 
+# network options
+args.num_filters = 64                # number of output channels in the first nn.Conv2d module in MyNetwork.
+args.resblock_type = 'plain'        # type of residual block. ('plain' | 'bottleneck').
+args.num_resblocks = [3,6,10]       # number of residual blocks in each Residual Layer.
+args.use_bn = False                  # whether or not to use batch normalization.
+
+# training options
+args.epoch = 50                    # training epoch.
+args.lr = 0.001                     # learning rate.
+weight_decay= 0.001
 
 ###################################################################################################
+#### Submissions
+tag_num = 13
 # log_1: baseline model
-# log_2: args.num_filters: 32 ⇒ 16
+# log_2: loss: += l2_reg, residual=[0,0,0]
+# log_3: loss: += l2_reg, residual=[0,0,0], lr:0.0001 ⇒ 0.001
+# log_4: loss: += l2_reg, residual=[0,0,0], lr:0.0001 ⇒ 0.001, adam_weight_decay=0.0001, num_filters=64
+# log_5[BEST]: loss: += l2_reg, residual=[1,1,1], args.resblock_type = 'plain', lr:0.0001 ⇒ 0.001, adam_weight_decay=0.0001, num_filters=64
+# log_6: loss: += l2_reg, residual=[1,2,3], args.resblock_type = 'plain', lr:0.0001 ⇒ 0.001, adam_weight_decay=0.0001, num_filters=64
+# log_7: loss: += l2_reg, residual=[3,2,1], args.resblock_type = 'plain', lr:0.0001 ⇒ 0.001, adam_weight_decay=0.0001, num_filters=64
+# log_8: loss: += l2_reg, residual=[1,2,3], args.resblock_type = 'bottleneck', lr:0.0001 ⇒ 0.001, adam_weight_decay=0.0001, num_filters=64
+# log_9: loss: += l2_reg, residual=[1,2,3], args.resblock_type = 'bottleneck', lr:0.0001 ⇒ 0.001, adam_weight_decay=0.0005, num_filters=64
+# log_10: loss: += l2_reg, residual=[1,1,1], args.resblock_type = 'bottleneck', lr:0.0001 ⇒ 0.001, adam_weight_decay=0.0005, num_filters=64
+
+# log_11: loss: += l2_reg, residual=[3,6,10], args.resblock_type = 'bottleneck', lr:0.0001 ⇒ 0.001, adam_weight_decay=0.0001, num_filters=64
+# log_12: residual=[3,6,10], args.resblock_type = 'bottleneck', lr:0.0001 ⇒ 0.001, adam_weight_decay=0.001, num_filters=64
+# log_13: residual=[3,6,10], args.resblock_type = 'plain', lr:0.0001 ⇒ 0.001, adam_weight_decay=0.001, num_filters=64
+###################################################################################################
+#### Labs
+# log_1: baseline model
+# log_2: args.num_filters: 32 ⇒16
 # log_3: args.num_filters: 32 ⇒64
 # log_4: args.num_filters: 32 ⇒64, loss: += l2_reg
 # log_5: args.num_filters: 32 ⇒64, batchnorm = True, adam(weight_decay=0.0005)
 # log_6: args.num_filters: 32 ⇒64, loss: += l2_reg, residual=[1,1,1]
 # log_7: args.num_filters: 32 ⇒64, loss: += l2_reg, residual=[1,1,1], args.resblock_type = 'plain'
 # log_8: args.num_filters: 32 ⇒64, loss: += l2_reg, residual=[1,1,1], args.resblock_type = 'plain', adam(weight_decay=0.000005)
-# log_9: args.num_filters: 32 ⇒64, loss: += l2_reg, residual=[1,1,1], args.resblock_type = 'plain', adam(weight_decay=0.000005), lr:0.0001 ⇒ 0.001
-# // log_: learning rate decay?
-# // log_: change the Adam's beta?
-###################################################################################################
+# log_9: args.num_filters: 32 ⇒64, loss: += l2_reg, residual=[1,1,1], args.resblock_type = 'plain', adam(weight_decay=0.0005), lr:0.0001 ⇒ 0.001
+
+# log_11: 50epochs, args.num_filters: 32 ⇒64, loss: += l2_reg, residual=[10,6,3], args.resblock_type = 'plain', adam(weight_decay=0.0001), lr:0.0001 ⇒ 0.001
+# log_12: 50epochs, args.num_filters: 32 ⇒64, residual=[10,6,3], args.resblock_type = 'plain', adam(weight_decay=0.0001), lr:0.0001 ⇒ 0.001
+# log_15: 50epochs, args.num_filters: 32 ⇒128, loss: += l2_reg, residual=[2,1,0], args.resblock_type = 'bottleneck', adam(weight_decay=0.0001), lr:0.0001 ⇒ 0.001
+# log_16: 50epochs, args.num_filters: 32 ⇒128, loss: += l2_reg, residual=[2,1,0], args.resblock_type = 'bottleneck', adam(weight_decay=0.0005), lr:0.0001 ⇒ 0.001
+
+# log_10(~0.8): 100epochs, args.num_filters: 32 ⇒64, loss: += l2_reg, residual=[2,1,0], args.resblock_type = 'plain', adam(weight_decay=0.0001), lr:0.0001 ⇒ 0.001
+# log_13: 50epochs, args.num_filters: 32 ⇒128, loss: += l2_reg, residual=[2,1,0], args.resblock_type = 'plain', adam(weight_decay=0.0001), lr:0.0001 ⇒ 0.001
+# log_14: 50epochs, args.num_filters: 32 ⇒128, loss: += l2_reg, residual=[0,0,0], args.resblock_type = 'plain', adam(weight_decay=0.0001), lr:0.0001 ⇒ 0.001
+# log_17: 50epochs, args.num_filters: 32 ⇒64, loss: += l2_reg, residual=[2,1,0], args.resblock_type = 'plain', adam(weight_decay=0.0001), lr:0.0001 ⇒ 0.0005
+
+# log_18: 50epochs, args.num_filters: 32 ⇒64, residual=[2,1,0], args.resblock_type = 'plain', adam(weight_decay=0.001), lr:0.0001 ⇒ 0.001
+# log_19: 50epochs, args.num_filters: 32 ⇒64, residual=[2,1,0], args.resblock_type = 'plain', adam(weight_decay=0.001), lr:0.0001 ⇒ 0.0005
+# log_20: 50epochs, args.num_filters: 32 ⇒64, residual=[2,1,0], args.resblock_type = 'plain', adam(weight_decay=0.005), lr:0.0001 ⇒ 0.0005
+# log_21: 50epochs, args.num_filters: 32 ⇒128, residual=[2,1,0], args.resblock_type = 'plain', adam(weight_decay=0.005), lr:0.0001 ⇒ 0.0005
+# log_22: 50epochs, args.num_filters: 32 ⇒128, residual=[1,2,3], args.resblock_type = 'plain', adam(weight_decay=0.005), lr:0.0001 ⇒ 0.0005
+# log_23: 50epochs, args.num_filters: 32 ⇒128, residual=[1,2,3], args.resblock_type = 'plain', adam(weight_decay=0.005), lr:0.0001 ⇒ 0.001
+# log_24: 100epochs, args.num_filters: 32 ⇒128, residual=[1,2,3], args.resblock_type = 'plain', adam(weight_decay=0.005), lr:0.0001 ⇒ 0.0005
+# log_25: ruined
 ###################################################################################################
 
 # Basic settings
@@ -475,7 +507,7 @@ else:
 # Define your model and optimizer
 # Complete ResBlockPlain, ResBlockBottleneck, and MyNetwork modules to proceed further.
 net = MyNetwork(args.num_filters, args.resblock_type, args.num_resblocks, args.use_bn).to(device)
-optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=0.000005)
+optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=weight_decay)
 
 print(net)
 
