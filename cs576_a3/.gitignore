@@ -1,3 +1,7 @@
 /assets
 /weights
 *.zip
+/dataset
+/test_images
+.vscode
+__pycache__
