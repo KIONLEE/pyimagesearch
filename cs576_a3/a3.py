@@ -200,8 +200,161 @@ class Loss(nn.Module):
             loss_class (Tensor): classification loss.
         """
         # Write your code here
-        
+        def center_to_ltrb(_tensor):
+            """ Transform tensor from 'center' to 'left-top, right-bottom'
+
+            Args:
+                _tensor (Tensor) : original, sized [filtered x B, 5], 5=len([x, y, w, h, conf]).
+            Returns:
+                tensor_ltrb (Tensor) : for computing iou, sized [filtered x B, 5] where we have 'filtered' cells, 5=len([x1, y1, x2, y2, conf]).
+            """
+            tensor_ltrb = torch.zeros_like(_tensor)
+            tensor_ltrb[:, :2] = _tensor[:, :2] - _tensor[:, 2:4] * .5 # compute x1, y1
+            tensor_ltrb[:, 2:4] = _tensor[:, :2] + _tensor[:, 2:4] * .5 # compute x2, y2
+            return tensor_ltrb
+
+        # mask for the cells which contain object
+        mask_obj = target_tensor[:, :, :, 4] == 1 # [batch_size, S, S]
+        mask_obj = mask_obj.unsqueeze(-1).expand_as(target_tensor) # [batch_size, S, S, Bx5+C], 5=len([x, y, w, h, conf])
+        # mask for the cells which does NOT contain object
+        mask_noobj = target_tensor[:, :, :, 4] == 0 # [batch_size, S, S]
+        mask_noobj = mask_noobj.unsqueeze(-1).expand_as(target_tensor) # [batch_size, S, S, Bx5+C], 5=len([x, y, w, h, conf])
+
+        # pred_tensor which contain object: '(tensor)_bb' for bounding boxes, '(tensor)_class' for calsses
+        pred_tensor_obj = pred_tensor[mask_obj] # [batch_size, S, S, Bx5+C], 5=len([x, y, w, h, conf])
+        pred_tensor_obj_bb = pred_tensor_obj[:, :, :, :self.B*5].view([-1, 5]) # [filtered x B, 5]
+        pred_tensor_obj_class = pred_tensor_obj[:, :, :, self.B*5:].view([-1, self.C]) # [filtered, C]
+        # target_tensor which contain object: '(tensor)_bb' for bounding boxes, '(tensor)_class' for calsses
+        target_tensor_obj = target_tensor[mask_obj] # [batch_size, S, S, Bx5+C], 5=len([x, y, w, h, conf])
+        target_tensor_obj_bb = target_tensor_obj[:, :, :, :self.B*5].view([-1, 5]) # [filtered x B, 5]
+        target_tensor_obj_class = target_tensor_obj[:, :, :, self.B*5:].view([-1, self.C]) # [filtered, C]
+
+        # mask for the bounding boxes which is resposible for the ground truth.
+        mask_resp = torch.zeros_like(pred_tensor_obj_bb)
+
+        for i in range(0, target_tensor_obj_bb.shape[0], self.B):
+            # preprocess
+            pred_bb = pred_tensor_obj_bb[i:i+self.B] # [B, 5], 5=len([x, y, w, h, conf])
+            target_bb = target_tensor_obj_bb[i:i+self.B]
+            pred_bb_ltrb = center_to_ltrb(pred_bb) # [B, 5], 5=len([x1, y1, x2, y2, conf])
+            target_bb_ltrb = center_to_ltrb(target_bb)
+
+            # compute iou
+            iou = compute_iou(pred_bb_ltrb[:, :4], target_bb_ltrb[0, :4]) # [B, 1], target has duplicate ground truth as in encoder function in data.py
+            bb_resp_iou, bb_resp_idx = iou.max(0) # choose maximum iou as resposible
+
+            # update
+            mask_resp[i+bb_resp_idx] = 1
+
+        # --- compute each loss ---
+        batch_size = target_tensor.shape[0]
+        pred_resp = pred_tensor_obj_bb[mask_resp]
+        target_resp = target_tensor_obj_bb[mask_resp]
+
+        # 1. loss_xy
+        loss_xy = torch.sum((target_resp[:, :2] - pred_resp[:, :2])**2) / batch_size
+
+        # 2. loss_wh
+        loss_wh = torch.sum((torch.sqrt(target_resp[:, 2:4]) - torch.sqrt(pred_resp[:, 2:4]))**2) / batch_size
+
+        # 3. loss_obj
+        loss_obj = torch.sum((target_resp[:, 4] - pred_resp[:, 4])**2) / batch_size
+
+        # 4. loss_noobj
+        # pred_tensor & target_tensor which does NOT contain object
+        pred_tensor_noobj = pred_tensor[mask_noobj] # [batch_size, S, S, Bx5+C], 5=len([x, y, w, h, conf])
+        target_tensor_noobj = target_tensor[mask_noobj]
+        pred_noobj_conf = pred_tensor_noobj[:, :, :, [4, 9]].view([-1, 2]) # only consider 'conf'
+        target_noobj_conf = target_tensor_noobj[:, :, :, [4, 9]].view([-1, 2])
+        loss_noobj = torch.sum((target_noobj_conf - pred_noobj_conf)**2) / batch_size
+
+        # 5. loss_class
+        loss_class = torch.sum((target_tensor_obj_class - pred_tensor_obj_class)**2) / batch_size
 
         return loss_xy, loss_wh, loss_obj, loss_noobj, loss_class
 
 compute_loss = Loss(grid_size, num_boxes, num_classes)
+
+
+# # compute_iou testing
+# def compute_iou(bbox1, bbox2):
+#     """ Compute the IoU (Intersection over Union) of two set of bboxes, each bbox format: [x1, y1, x2, y2].
+#     Use this function if necessary.
+
+#     Args:
+#         bbox1: (Tensor) bounding bboxes, sized [N, 4].
+#         bbox2: (Tensor) bounding bboxes, sized [M, 4].
+#     Returns:
+#         (Tensor) IoU, sized [N, M].
+#     """
+#     N = bbox1.size(0)
+#     M = bbox2.size(0)
+
+#     # Compute left-top coordinate of the intersections
+#     lt = torch.max(
+#         bbox1[:, :2].unsqueeze(1).expand(N, M, 2), # [N, 2] -> [N, 1, 2] -> [N, M, 2]
+#         bbox2[:, :2].unsqueeze(0).expand(N, M, 2)  # [M, 2] -> [1, M, 2] -> [N, M, 2]
+#     )
+#     # Conpute right-bottom coordinate of the intersections
+#     rb = torch.min(
+#         bbox1[:, 2:].unsqueeze(1).expand(N, M, 2), # [N, 2] -> [N, 1, 2] -> [N, M, 2]
+#         bbox2[:, 2:].unsqueeze(0).expand(N, M, 2)  # [M, 2] -> [1, M, 2] -> [N, M, 2]
+#     )
+#     # Compute area of the intersections from the coordinates
+#     wh = rb - lt   # width and height of the intersection, [N, M, 2]
+#     wh[wh < 0] = 0 # clip at 0
+#     inter = wh[:, :, 0] * wh[:, :, 1] # [N, M]
+
+#     # Compute area of the bboxes
+#     area1 = (bbox1[:, 2] - bbox1[:, 0]) * (bbox1[:, 3] - bbox1[:, 1]) # [N, ]
+#     area2 = (bbox2[:, 2] - bbox2[:, 0]) * (bbox2[:, 3] - bbox2[:, 1]) # [M, ]
+#     area1 = area1.unsqueeze(1).expand_as(inter) # [N, ] -> [N, 1] -> [N, M]
+#     area2 = area2.unsqueeze(0).expand_as(inter) # [M, ] -> [1, M] -> [N, M]
+
+#     # Compute IoU from the areas
+#     union = area1 + area2 - inter # [N, M, 2]
+#     iou = inter / union           # [N, M, 2]
+
+#     return iou
+
+# b1 = torch.tensor([[3.,3.,4.,4.], [1.,1.,2.,2.],])
+# torch.sum(b1)
+# mask = (b1 <= 2)
+# b1[mask]
+# b1m = b1[:,3] > 3
+# b1m1 = b1m.unsqueeze(-1).expand_as(b1)
+# b1m1 * b1
+# b1[:, :2] = b1[:, :2] - b1[:, 2:4]*0.5
+# b1.shape[0]
+# b2 = torch.tensor([[1.5,1.5,2.5,2.5]])
+# IoU = compute_iou(b1, b2)
+# print(b1.size(), b2.size(), IoU.size())
+# print(IoU)
+# int(np.argmax(IoU))
+# # compute_iou testing
+
+
+# Training & Testing.
+model = model.to(device)
+for epoch in range(1, max_epoch):
+    # Learning rate scheduling
+    if epoch in [50, 150]:
+        lr *= 0.1
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+
+    if epoch < last_epoch:
+        continue
+
+    model.train()
+    for x, y in train_dloader:
+        # implement training pipeline here
+    model.eval()
+    with torch.no_grad():
+        for x, y in test_dloader:
+        # implement testing pipeline here
+    
+    ckpt = {'model':model.state_dict(),
+            'optimizer':optimizer.state_dict(),
+            'epoch':epoch}
+    torch.save(ckpt, ckpt_path)
