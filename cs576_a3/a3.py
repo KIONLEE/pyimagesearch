@@ -95,7 +95,7 @@ class Yolo(nn.Module):
             # implement detection head here.
             nn.Linear(in_features=25088, out_features=4096, bias=True),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=.5, inplace=True),
+            nn.Dropout(p=.5, inplace=False),
             nn.Linear(in_features=4096, out_features=1470, bias=True)
         )
     def forward(self, x):
@@ -206,14 +206,16 @@ class Loss(nn.Module):
             Args:
                 _tensor (Tensor) : original, sized [filtered x B, 5], 5=len([x, y, w, h, conf]).
             Returns:
-                tensor_ltrb (Tensor) : for computing iou, sized [filtered x B, 5] where we have 'filtered' cells, 5=len([x1, y1, x2, y2, conf]).
+                tensor_ltrb (Tensor) : for computing iou, sized [filtered x B, 5] where we have 'filtered' cells vary in context, 5=len([x1, y1, x2, y2, conf]).
             """
-            tensor_ltrb = torch.zeros_like(_tensor)
+            tensor_ltrb = torch.zeros_like(_tensor).to(device)
+            # tensor_ltrb = Variable(torch.FloatTensor(_tensor.size())).zero_()
             tensor_ltrb[:, :2] = _tensor[:, :2] - _tensor[:, 2:4] * .5 # compute x1, y1
             tensor_ltrb[:, 2:4] = _tensor[:, :2] + _tensor[:, 2:4] * .5 # compute x2, y2
             return tensor_ltrb
 
         # mask for the cells which contain object
+        batch_size = target_tensor.shape[0]
         mask_obj = target_tensor[:, :, :, 4] == 1 # [batch_size, S, S]
         mask_obj = mask_obj.unsqueeze(-1).expand_as(target_tensor) # [batch_size, S, S, Bx5+C], 5=len([x, y, w, h, conf])
         # mask for the cells which does NOT contain object
@@ -221,16 +223,17 @@ class Loss(nn.Module):
         mask_noobj = mask_noobj.unsqueeze(-1).expand_as(target_tensor) # [batch_size, S, S, Bx5+C], 5=len([x, y, w, h, conf])
 
         # pred_tensor which contain object: '(tensor)_bb' for bounding boxes, '(tensor)_class' for calsses
-        pred_tensor_obj = pred_tensor[mask_obj] # [batch_size, S, S, Bx5+C], 5=len([x, y, w, h, conf])
-        pred_tensor_obj_bb = pred_tensor_obj[:, :, :, :self.B*5].view([-1, 5]) # [filtered x B, 5]
-        pred_tensor_obj_class = pred_tensor_obj[:, :, :, self.B*5:].view([-1, self.C]) # [filtered, C]
+        pred_tensor_obj = pred_tensor[mask_obj].reshape([-1, self.B*5+self.C]) # [filtered, Bx5+C], 5=len([x, y, w, h, conf])
+        pred_tensor_obj_bb = pred_tensor_obj[:, :self.B*5].reshape([-1, 5]) # [filtered x B, 5]
+        pred_tensor_obj_class = pred_tensor_obj[:, self.B*5:].reshape([-1, self.C]) # [filtered, C]
         # target_tensor which contain object: '(tensor)_bb' for bounding boxes, '(tensor)_class' for calsses
-        target_tensor_obj = target_tensor[mask_obj] # [batch_size, S, S, Bx5+C], 5=len([x, y, w, h, conf])
-        target_tensor_obj_bb = target_tensor_obj[:, :, :, :self.B*5].view([-1, 5]) # [filtered x B, 5]
-        target_tensor_obj_class = target_tensor_obj[:, :, :, self.B*5:].view([-1, self.C]) # [filtered, C]
+        target_tensor_obj = target_tensor[mask_obj].reshape([-1, self.B*5+self.C]) # [filtered, Bx5+C], 5=len([x, y, w, h, conf])
+        target_tensor_obj_bb = target_tensor_obj[:, :self.B*5].reshape([-1, 5]) # [filtered x B, 5]
+        target_tensor_obj_class = target_tensor_obj[:, self.B*5:].reshape([-1, self.C]) # [filtered, C]
 
         # mask for the bounding boxes which is resposible for the ground truth.
-        mask_resp = torch.zeros_like(pred_tensor_obj_bb)
+        mask_resp = torch.ByteTensor(pred_tensor_obj_bb.size()).to(device)
+        mask_resp.zero_()
 
         for i in range(0, target_tensor_obj_bb.shape[0], self.B):
             # preprocess
@@ -240,16 +243,15 @@ class Loss(nn.Module):
             target_bb_ltrb = center_to_ltrb(target_bb)
 
             # compute iou
-            iou = compute_iou(pred_bb_ltrb[:, :4], target_bb_ltrb[0, :4]) # [B, 1], target has duplicate ground truth as in encoder function in data.py
+            iou = self.compute_iou(pred_bb_ltrb[:, :4], target_bb_ltrb[0, :4].unsqueeze(0)) # [B, 1], target has duplicate ground truth as in encoder function in data.py
             bb_resp_iou, bb_resp_idx = iou.max(0) # choose maximum iou as resposible
 
             # update
             mask_resp[i+bb_resp_idx] = 1
 
         # --- compute each loss ---
-        batch_size = target_tensor.shape[0]
-        pred_resp = pred_tensor_obj_bb[mask_resp]
-        target_resp = target_tensor_obj_bb[mask_resp]
+        pred_resp = pred_tensor_obj_bb[mask_resp].reshape([-1, 5])
+        target_resp = target_tensor_obj_bb[mask_resp].reshape([-1, 5])
 
         # 1. loss_xy
         loss_xy = torch.sum((target_resp[:, :2] - pred_resp[:, :2])**2) / batch_size
@@ -262,10 +264,10 @@ class Loss(nn.Module):
 
         # 4. loss_noobj
         # pred_tensor & target_tensor which does NOT contain object
-        pred_tensor_noobj = pred_tensor[mask_noobj] # [batch_size, S, S, Bx5+C], 5=len([x, y, w, h, conf])
-        target_tensor_noobj = target_tensor[mask_noobj]
-        pred_noobj_conf = pred_tensor_noobj[:, :, :, [4, 9]].view([-1, 2]) # only consider 'conf'
-        target_noobj_conf = target_tensor_noobj[:, :, :, [4, 9]].view([-1, 2])
+        pred_tensor_noobj = pred_tensor[mask_noobj].reshape([-1, self.B*5+self.C]) # [filtered, Bx5+C], 5=len([x, y, w, h, conf])
+        target_tensor_noobj = target_tensor[mask_noobj].reshape([-1, self.B*5+self.C])
+        pred_noobj_conf = pred_tensor_noobj[:, [4, 9]].reshape([-1, 2]) # only consider 'conf'
+        target_noobj_conf = target_tensor_noobj[:, [4, 9]].reshape([-1, 2])
         loss_noobj = torch.sum((target_noobj_conf - pred_noobj_conf)**2) / batch_size
 
         # 5. loss_class
@@ -333,10 +335,18 @@ compute_loss = Loss(grid_size, num_boxes, num_classes)
 # int(np.argmax(IoU))
 # # compute_iou testing
 
+# Problem 3. Implement Train/Test Pipeline
+from torch.utils.tensorboard import SummaryWriter
+log_dir = "./logs"
+writer = SummaryWriter(log_dir)
+tb_log_freq = 5
+import time
 
 # Training & Testing.
 model = model.to(device)
+best_test_loss_final = np.inf
 for epoch in range(1, max_epoch):
+    start_time = time.time()
     # Learning rate scheduling
     if epoch in [50, 150]:
         lr *= 0.1
@@ -347,14 +357,60 @@ for epoch in range(1, max_epoch):
         continue
 
     model.train()
-    for x, y in train_dloader:
+    for i, (x, y) in enumerate(train_dloader):
         # implement training pipeline here
+        # 1. set proper device
+        x = x.to(device) # torch.Size([64, 3, 224, 224])
+        y = y.to(device) # torch.Size([64, 7, 7, 30])
+
+        # 2. feed and get output from network
+        y_pred = model(x)
+
+        # 2. compute loss aggregated to a single final loss as paper
+        loss_function = Loss()
+        loss_xy, loss_wh, loss_obj, loss_noobj, loss_class = loss_function(y_pred, y)
+        train_loss_final = lambda_coord*(loss_xy+loss_wh) + loss_obj + lambda_noobj*loss_noobj + loss_class
+
+        # 3. backward and update
+        optimizer.zero_grad()
+        train_loss_final.backward()
+        optimizer.step()
+
+        # tensorboard
+        n_iter = epoch * len(train_dloader) + i
+        if n_iter % tb_log_freq == 0:
+            writer.add_scalar('train/loss', train_loss_final, n_iter)
+
     model.eval()
     with torch.no_grad():
         for x, y in test_dloader:
-        # implement testing pipeline here
+            # implement testing pipeline here
+            # 1. set proper device
+            x = x.to(device) # torch.Size([64, 3, 224, 224])
+            y = y.to(device) # torch.Size([64, 7, 7, 30])
+
+            # 2. feed and get output from network
+            y_pred = model(x)
+
+            # 2. compute loss aggregated to a single final loss as paper
+            loss_function = Loss()
+            loss_xy, loss_wh, loss_obj, loss_noobj, loss_class = loss_function(y_pred, y)
+            test_loss_final = lambda_coord*(loss_xy+loss_wh) + loss_obj + lambda_noobj*loss_noobj + loss_class
+
+            # tensorboard
+            n_iter = epoch * len(test_dloader) + i
+            if n_iter % tb_log_freq == 0:
+                writer.add_scalar('test/loss', test_loss_final, n_iter)
     
+    if test_loss_final < best_test_loss_final:
+        best_test_loss_final = test_loss_final
+
+    # save the results
     ckpt = {'model':model.state_dict(),
             'optimizer':optimizer.state_dict(),
             'epoch':epoch}
     torch.save(ckpt, ckpt_path)
+
+    # print
+    print('Epoch [%d/%d], Val Loss: %.4f, Best Val Loss: %.4f, Time: %.4f'
+    % (epoch + 1, max_epoch, test_loss_final, best_test_loss_final, time.time() - start_time))
