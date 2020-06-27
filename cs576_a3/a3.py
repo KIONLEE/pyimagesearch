@@ -212,6 +212,7 @@ class Loss(nn.Module):
             # tensor_ltrb = Variable(torch.FloatTensor(_tensor.size())).zero_()
             tensor_ltrb[:, :2] = _tensor[:, :2] - _tensor[:, 2:4] * .5 # compute x1, y1
             tensor_ltrb[:, 2:4] = _tensor[:, :2] + _tensor[:, 2:4] * .5 # compute x2, y2
+            tensor_ltrb[:,4] = _tensor[:,4] # pass conf
             return tensor_ltrb
 
         # mask for the cells which contain object
@@ -244,7 +245,7 @@ class Loss(nn.Module):
 
             # compute iou
             iou = self.compute_iou(pred_bb_ltrb[:, :4], target_bb_ltrb[0, :4].unsqueeze(0)) # [B, 1], target has duplicate ground truth as in encoder function in data.py
-            bb_resp_iou, bb_resp_idx = iou.max(0) # choose maximum iou as resposible
+            _, bb_resp_idx = iou.max(0) # choose maximum iou as resposible
 
             # update
             mask_resp[i+bb_resp_idx] = 1
@@ -263,10 +264,11 @@ class Loss(nn.Module):
         loss_obj = torch.sum((target_resp[:, 4] - pred_resp[:, 4])**2) / batch_size
 
         # 4. loss_noobj
+        # I decided to consider both 'conf' for this loss, as discussed with TA in http://klms.kaist.ac.kr/mod/ubboard/article.php?id=352893&bwid=192633
         # pred_tensor & target_tensor which does NOT contain object
         pred_tensor_noobj = pred_tensor[mask_noobj].reshape([-1, self.B*5+self.C]) # [filtered, Bx5+C], 5=len([x, y, w, h, conf])
         target_tensor_noobj = target_tensor[mask_noobj].reshape([-1, self.B*5+self.C])
-        pred_noobj_conf = pred_tensor_noobj[:, [4, 9]].reshape([-1, 2]) # only consider 'conf'
+        pred_noobj_conf = pred_tensor_noobj[:, [4, 9]].reshape([-1, 2]) # consider both 'conf'
         target_noobj_conf = target_tensor_noobj[:, [4, 9]].reshape([-1, 2])
         loss_noobj = torch.sum((target_noobj_conf - pred_noobj_conf)**2) / batch_size
 
@@ -319,8 +321,14 @@ compute_loss = Loss(grid_size, num_boxes, num_classes)
 
 #     return iou
 
-# b1 = torch.tensor([[3.,3.,4.,4.], [1.,1.,2.,2.],])
+# b1 = torch.tensor([[[3.,3.,4.,5.],[5.,4.,3.,2.]], [[8.,1.,9.,-1.],[-1.,0.,1.,3.]], [[2.,1.,0.,-1.],[-1.,0.,1.,9.]]])
 # torch.sum(b1)
+# b1
+# b1.shape
+# b1.argmax()
+# b1.argmax(0)
+# b1.argmax(1)
+# b1.argmax(2)
 # mask = (b1 <= 2)
 # b1[mask]
 # b1m = b1[:,3] > 3
@@ -333,7 +341,7 @@ compute_loss = Loss(grid_size, num_boxes, num_classes)
 # print(b1.size(), b2.size(), IoU.size())
 # print(IoU)
 # int(np.argmax(IoU))
-# # compute_iou testing
+# compute_iou testing
 
 # Problem 3. Implement Train/Test Pipeline
 from torch.utils.tensorboard import SummaryWriter
@@ -414,3 +422,166 @@ for epoch in range(1, max_epoch):
     # print
     print('Epoch [%d/%d], Val Loss: %.4f, Best Val Loss: %.4f, Time: %.4f'
     % (epoch + 1, max_epoch, test_loss_final, best_test_loss_final, time.time() - start_time))
+
+
+# Problem 4. Implement decoder to extract bounding boxes from output-grids
+VOC_CLASSES = (
+    'aeroplane', 'bicycle', 'bird', 'boat',
+    'bottle', 'bus', 'car', 'cat', 'chair',
+    'cow', 'diningtable', 'dog', 'horse',
+    'motorbike', 'person', 'pottedplant',
+    'sheep', 'sofa', 'train', 'tvmonitor')
+
+def NMS(bboxes, scores, threshold=0.35):
+    ''' Non Max Suppression
+    Args:
+        bboxes: (torch.tensors) list of bounding boxes. size:(N, 4) ((left_top_x, left_top_y, right_bottom_x, right_bottom_y), (...))
+        probs: (torch.tensors) list of confidence probability. size:(N,) 
+        threshold: (float)   
+    Returns:
+        keep_dim: (torch.tensors)
+    '''
+    x1 = bboxes[:, 0]
+    y1 = bboxes[:, 1]
+    x2 = bboxes[:, 2]
+    y2 = bboxes[:, 3]
+
+    areas = (x2 - x1) * (y2 - y1)
+
+    _, order = scores.sort(0, descending=True)
+    keep = []
+    while order.numel() > 0:
+        try:
+            i = order[0]
+        except:
+            i = order.item()
+        keep.append(i)
+
+        if order.numel() == 1: break
+
+        xx1 = x1[order[1:]].clamp(min=x1[i]) # consider intersection
+        yy1 = y1[order[1:]].clamp(min=y1[i])
+        xx2 = x2[order[1:]].clamp(max=x2[i])
+        yy2 = y2[order[1:]].clamp(max=y2[i])
+
+        w = (xx2 - xx1).clamp(min=0) # clamp out which is outbounded from current box
+        h = (yy2 - yy1).clamp(min=0)
+        inter = w * h
+
+        ovr = inter / (areas[i] + areas[order[1:]] - inter) # iou
+        ids = (ovr <= threshold).nonzero().squeeze() # leave only over the threshold
+        if ids.numel() == 0:
+            break
+        order = order[ids + 1]
+    keep_dim = torch.LongTensor(keep)
+    return keep_dim
+
+def inference(model, image_path):
+    """ Inference function
+    Args:
+        model: (nn.Module) Trained YOLO model.
+        image_path: (str) Path for loading the image.
+    """
+    # load & pre-processing
+    image_name = image_path.split('/')[-1]
+    image = cv2.imread(image_path)
+
+    h, w, c = image.shape
+    img = cv2.resize(image, (224, 224))
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    transform = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    img = transform(torch.from_numpy(img).float().div(255).transpose(2, 1).transpose(1, 0)) #Normalization
+    img = img.unsqueeze(0)
+    img = img.to(device)
+
+    # inference
+    output_grid = model(img).cpu()
+
+    #### YOU SHOULD IMPLEMENT FOLLOWING decoder FUNCTION ####
+    # decode the output grid to the detected bounding boxes, classes and probabilities.
+    bboxes, class_idxs, probs = decoder(output_grid)
+    num_bboxes = bboxes.size(0)
+
+    # draw bounding boxes & class name
+    for i in range(num_bboxes):
+        bbox = bboxes[i]
+        class_name = VOC_CLASSES[class_idxs[i]]
+        prob = probs[i]
+
+        x1, y1 = int(bbox[0] * w), int(bbox[1] * h)
+        x2, y2 = int(bbox[2] * w), int(bbox[3] * h)
+
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(image, '%s: %.2f'%(class_name, prob), (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1,
+                    8)
+
+    cv2.imwrite(image_name.replace('.jpg', '_result.jpg'), image)
+
+def decoder(grid):
+    """ Decoder function that decode the output-grid to bounding box, class and probability. 
+    Args:
+        grid: (torch.tensors)
+    Returns:
+        bboxes: (torch.tensors) list of bounding boxes. size:(N, 4) ((left_top_x, left_top_y, right_bottom_x, right_bottom_y), (...))
+        class_idxs: (torch.tensors) list of class index. size:(N,)
+        probs: (torch.tensors) list of confidence probability. size:(N,)
+    """
+
+    grid_num = 7
+    bboxes = []
+    class_idxs = []
+    probs = []
+
+    S = grid_num
+    B = 2
+    C = 20
+
+    def center_to_ltrb(_tensor):
+        """ Transform tensor from 'center' to 'left-top, right-bottom'
+
+        Args:
+            _tensor (Tensor) : original, sized [filtered x B, 5], 5=len([x, y, w, h, conf]).
+        Returns:
+            tensor_ltrb (Tensor) : for computing iou, sized [filtered x B, 5] where we have 'filtered' cells vary in context, 5=len([x1, y1, x2, y2, conf]).
+        """
+        tensor_ltrb = torch.zeros_like(_tensor)
+        # tensor_ltrb = Variable(torch.FloatTensor(_tensor.size())).zero_()
+        tensor_ltrb[:, :2] = _tensor[:, :2] - _tensor[:, 2:4] * .5 # compute x1, y1
+        tensor_ltrb[:, 2:4] = _tensor[:, :2] + _tensor[:, 2:4] * .5 # compute x2, y2
+        tensor_ltrb[:,4] = _tensor[:,4] # pass conf
+        return tensor_ltrb
+
+    grid = grid.squeeze().cpu().data
+    
+    # grid : [S, S, Bx5+C] = [7, 7, 30]
+    grid_coord = grid[:,:,:B*5].reshape([-1, 5]) # [S x S x B, 5], 5=len([x, y, w, h, conf])
+    grid_coord_ltrb = center_to_ltrb(grid_coord) # [S x S x B, 5], 5=len([x1, y1, x2, y2, conf])
+    bboxes.append(grid_coord_ltrb[:,:4]) # [S X S X B, 4], we only need (left_top_x, left_top_y, right_bottom_x, right_bottom_y) for each boxes
+    probs.append(grid_coord_ltrb[:,4]) # [S X S X B]
+
+    grid_class = grid[:,:,B*5:] # [S, S, C]
+    # print("grid_class.shape:", grid_class.shape)
+    grid_class = grid_class.repeat([1,1,B]).reshape([-1, C]) # [S x S x B, C]
+    grid_class_idxs = grid_class.argmax(-1) # choose the highest score as final prediction
+    class_idxs.append(grid_class_idxs) # [S X S X B]
+    
+    if len(bboxes) == 0: # Any box was not detected
+        bboxes = torch.zeros((1,4))
+        probs = torch.zeros(1)
+        class_idxs = torch.zeros(1)
+        
+    else: 
+        #list of tensors -> tensors
+        bboxes = torch.stack(bboxes).squeeze()
+        probs = torch.stack(probs).squeeze()
+        class_idxs = torch.stack(class_idxs).squeeze()
+
+    keep_dim = NMS(bboxes, probs, threshold=0.35) # Non Max Suppression
+
+    return bboxes[keep_dim], class_idxs[keep_dim], probs[keep_dim]
+
+test_image_dir = 'test_images'
+image_path_list = [os.path.join(test_image_dir, path) for path in os.listdir(test_image_dir)]
+
+for image_path in image_path_list:
+  inference(model, image_path)
