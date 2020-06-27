@@ -545,26 +545,35 @@ def decoder(grid):
             tensor_ltrb (Tensor) : for computing iou, sized [filtered x B, 5] where we have 'filtered' cells vary in context, 5=len([x1, y1, x2, y2, conf]).
         """
         tensor_ltrb = torch.zeros_like(_tensor)
-        # tensor_ltrb = Variable(torch.FloatTensor(_tensor.size())).zero_()
         tensor_ltrb[:, :2] = _tensor[:, :2] - _tensor[:, 2:4] * .5 # compute x1, y1
         tensor_ltrb[:, 2:4] = _tensor[:, :2] + _tensor[:, 2:4] * .5 # compute x2, y2
         tensor_ltrb[:,4] = _tensor[:,4] # pass conf
         return tensor_ltrb
 
+    # grid : [S, S, Bx5+C] = [7, 7, 30]
     grid = grid.squeeze().cpu().data
     
-    # grid : [S, S, Bx5+C] = [7, 7, 30]
+    # separate coordinates and confidences
     grid_coord = grid[:,:,:B*5].reshape([-1, 5]) # [S x S x B, 5], 5=len([x, y, w, h, conf])
     grid_coord_ltrb = center_to_ltrb(grid_coord) # [S x S x B, 5], 5=len([x1, y1, x2, y2, conf])
+
+    # making class indices
+    grid_class = grid[:,:,B*5:] # [S, S, C]
+    grid_class = grid_class.repeat([1,1,B]).reshape([-1, C]) # [S x S x B, C]
+
+    # # compute class scores for filtering out lower ones
+    # score_threshold=0.2
+    # class_scores = grid_class * grid_coord_ltrb[:,4].unsqueeze(-1) # [S x S x B, C]
+    # class_scores[class_scores < score_threshold] = 0 # set zero if score < score_threshold
+
+    # get class indicies
+    grid_class_idxs = grid_class.argmax(-1) # choose the highest score as final prediction
+    
+    # update results
     bboxes.append(grid_coord_ltrb[:,:4]) # [S X S X B, 4], we only need (left_top_x, left_top_y, right_bottom_x, right_bottom_y) for each boxes
     probs.append(grid_coord_ltrb[:,4]) # [S X S X B]
-
-    grid_class = grid[:,:,B*5:] # [S, S, C]
-    # print("grid_class.shape:", grid_class.shape)
-    grid_class = grid_class.repeat([1,1,B]).reshape([-1, C]) # [S x S x B, C]
-    grid_class_idxs = grid_class.argmax(-1) # choose the highest score as final prediction
     class_idxs.append(grid_class_idxs) # [S X S X B]
-    
+
     if len(bboxes) == 0: # Any box was not detected
         bboxes = torch.zeros((1,4))
         probs = torch.zeros(1)
@@ -578,10 +587,18 @@ def decoder(grid):
 
     keep_dim = NMS(bboxes, probs, threshold=0.35) # Non Max Suppression
 
-    return bboxes[keep_dim], class_idxs[keep_dim], probs[keep_dim]
+    # select bboxes to draw
+    bboxes_nms, class_nms, probs_nms = bboxes[keep_dim], class_idxs[keep_dim], probs[keep_dim]
+    mask_prob = (probs_nms > 0.35)
+    probs_nms = probs_nms[mask_prob]
+    class_nms = class_nms[mask_prob]
+    mask_prob = mask_prob.unsqueeze(-1).expand_as(bboxes_nms)
+    bboxes_nms = bboxes_nms[mask_prob].reshape([-1, 4])
+
+    return bboxes_nms, class_nms, probs_nms
 
 test_image_dir = 'test_images'
 image_path_list = [os.path.join(test_image_dir, path) for path in os.listdir(test_image_dir)]
 
 for image_path in image_path_list:
-  inference(model, image_path)
+    inference(model, image_path)
