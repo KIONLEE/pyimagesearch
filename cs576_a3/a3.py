@@ -553,49 +553,115 @@ def decoder(grid):
     # grid : [S, S, Bx5+C] = [7, 7, 30]
     grid = grid.squeeze().cpu().data
     
-    # separate coordinates and confidences
+    # extract coordinates and confidences
     grid_coord = grid[:,:,:B*5].reshape([-1, 5]) # [S x S x B, 5], 5=len([x, y, w, h, conf])
     grid_coord_ltrb = center_to_ltrb(grid_coord) # [S x S x B, 5], 5=len([x1, y1, x2, y2, conf])
+    bboxes_all = (grid_coord_ltrb[:,:4]) # [S X S X B, 4], we only need (left_top_x, left_top_y, right_bottom_x, right_bottom_y) for each boxes
+    probs_all = (grid_coord_ltrb[:,4]) # [S X S X B]
 
-    # making class indices
+    # extract class probabilities
     grid_class = grid[:,:,B*5:] # [S, S, C]
     grid_class = grid_class.repeat([1,1,B]).reshape([-1, C]) # [S x S x B, C]
 
     # # compute class scores for filtering out lower ones
-    # score_threshold=0.2
-    # class_scores = grid_class * grid_coord_ltrb[:,4].unsqueeze(-1) # [S x S x B, C]
-    # class_scores[class_scores < score_threshold] = 0 # set zero if score < score_threshold
+    score_threshold = 0.2
+    class_score_all = grid_class * grid_coord_ltrb[:,4].unsqueeze(-1) # [S x S x B, C]
+    class_score_all[class_score_all < score_threshold] = 0 # set zero if score < score_threshold
 
-    # get class indicies
-    grid_class_idxs = grid_class.argmax(-1) # choose the highest score as final prediction
-    
-    # update results
-    bboxes.append(grid_coord_ltrb[:,:4]) # [S X S X B, 4], we only need (left_top_x, left_top_y, right_bottom_x, right_bottom_y) for each boxes
-    probs.append(grid_coord_ltrb[:,4]) # [S X S X B]
-    class_idxs.append(grid_class_idxs) # [S X S X B]
+    # # get class indicies
+    # grid_class_idxs = grid_class.argmax(-1) # choose the highest score as final prediction
+    # class_idxs_all = (grid_class_idxs) # [S X S X B]
 
-    if len(bboxes) == 0: # Any box was not detected
-        bboxes = torch.zeros((1,4))
-        probs = torch.zeros(1)
-        class_idxs = torch.zeros(1)
-        
-    else: 
-        #list of tensors -> tensors
-        bboxes = torch.stack(bboxes).squeeze()
-        probs = torch.stack(probs).squeeze()
-        class_idxs = torch.stack(class_idxs).squeeze()
+    # NMS among bboxes by classes
+    class_scores = []
+    for c in range(C):
+        if np.count_nonzero(class_score_all[:,c]) == 0:
+            continue
+        # print("INNER C LOOP")
+        # print(np.count_nonzero(class_score_all[:,c]))
+        # print(bboxes_all.shape)
+        # print(class_score_all[:, c])
+        keep_dim = NMS(bboxes_all, class_score_all[:, c], threshold=0.35) # Non Max Suppression
+        # print(bboxes_all[keep_dim].reshape([-1, 4]).shape)
+        # print(probs_all[keep_dim].shape)
+        # print("keep_dim:", keep_dim)
+        # print(class_score_all[keep_dim].shape)
+        bboxes.append(bboxes_all[keep_dim].reshape([-1, 4]))
+        probs.append(probs_all[keep_dim])
+        class_scores.append(class_score_all[keep_dim])
+    # print("len(bboxes):", len(bboxes))
+    # print("len(probs):", len(probs))
+    # print("len(class_scores):", len(class_scores))
 
-    keep_dim = NMS(bboxes, probs, threshold=0.35) # Non Max Suppression
+    bboxes_decoded = []
+    probs_decoded = []
+    class_idxs_decoded = []
+    # select bboxes to draw by class score values
+    for b in range(len(bboxes)):
+        # print("np.count_nonzero(class_scores[b]):",np.count_nonzero(class_scores[b]))
+        # print("len(bboxes[b]):", len(bboxes[b]))
+        # print("len(probs[b]):", len(probs[b]))
+        # print("len(class_scores[b]):", len(class_scores[b]))
+        for (bb, prob, cs) in zip(bboxes[b], probs[b], class_scores[b]):
+            if np.count_nonzero(cs) == 0:
+                continue
+            # print("cs:", cs.shape, cs.dtype, cs)
+            score, class_idx = torch.max(cs, 0)
+            # print("class_idx, score:", class_idx, score)
+            if score > 0:
+                bboxes_decoded.append(bb)
+                probs_decoded.append(prob)
+                class_idxs_decoded.append(class_idx)
 
-    # select bboxes to draw
-    bboxes_nms, class_nms, probs_nms = bboxes[keep_dim], class_idxs[keep_dim], probs[keep_dim]
-    mask_prob = (probs_nms > 0.35)
-    probs_nms = probs_nms[mask_prob]
-    class_nms = class_nms[mask_prob]
-    mask_prob = mask_prob.unsqueeze(-1).expand_as(bboxes_nms)
-    bboxes_nms = bboxes_nms[mask_prob].reshape([-1, 4])
+    if len(bboxes_decoded) == 0: # Any box was not detected
+        # print("\n\n\n\n\nNO PREDICTION!!!\n\n\n\n\n")
+        bboxes_decoded = torch.tensor([])
+        probs_decoded = torch.tensor([])
+        class_idxs_decoded = torch.tensor([])
 
-    return bboxes_nms, class_nms, probs_nms
+    else:
+        # list of tensors -> tensors
+        if len(bboxes_decoded) == 1:
+            # print("\n\n\n\n\nONLY ONE PREDICTION!!!\n\n\n\n\n")
+            # print("----- Before stack and unsqueeze -----")
+            # print(bboxes_decoded)
+            # print(class_idxs_decoded)
+            # print(probs_decoded)
+            # print("----- Before unsqueeze -----")
+            # print(torch.stack(bboxes_decoded))
+            # print(torch.stack(class_idxs_decoded))
+            # print(torch.stack(probs_decoded))
+            bboxes_decoded = torch.stack(bboxes_decoded)
+            probs_decoded = torch.stack(probs_decoded)
+            class_idxs_decoded = torch.stack(class_idxs_decoded)
+            # print("----- After unsqueeze -----")
+            # print(bboxes_decoded)
+            # print(class_idxs_decoded)
+            # print(probs_decoded)
+
+        else :
+            # print("----- Before stack and squeeze -----")
+            # print(bboxes_decoded)
+            # print(class_idxs_decoded)
+            # print(probs_decoded)
+            # print("----- Before squeeze -----")
+            # print(torch.stack(bboxes_decoded))
+            # print(torch.stack(class_idxs_decoded))
+            # print(torch.stack(probs_decoded))
+            bboxes_decoded = torch.stack(bboxes_decoded).squeeze()
+            probs_decoded = torch.stack(probs_decoded).squeeze()
+            class_idxs_decoded = torch.stack(class_idxs_decoded).squeeze()
+            # print("----- After squeeze -----")
+            # print(bboxes_decoded)
+            # print(class_idxs_decoded)
+            # print(probs_decoded)
+            
+
+    # print("bboxes_decoded, probs_decoded, class_idxs_decoded:", bboxes_decoded, probs_decoded, class_idxs_decoded)
+    # print(bboxes_decoded[0])
+    # print(probs_decoded[0])
+    # print(VOC_CLASSES[class_idxs_decoded[0]])
+    return bboxes_decoded, class_idxs_decoded, probs_decoded
 
 test_image_dir = 'test_images'
 image_path_list = [os.path.join(test_image_dir, path) for path in os.listdir(test_image_dir)]
