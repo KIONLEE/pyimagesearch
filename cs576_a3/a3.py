@@ -93,10 +93,10 @@ class Yolo(nn.Module):
         )
         self.detector = nn.Sequential(
             # implement detection head here.
-            nn.Linear(in_features=25088, out_features=4096, bias=True),
+            nn.Linear(in_features=7*7*512, out_features=4096, bias=True),
             nn.ReLU(inplace=True),
             nn.Dropout(p=.5, inplace=False),
-            nn.Linear(in_features=4096, out_features=1470, bias=True)
+            nn.Linear(in_features=4096, out_features=self.S*self.S*(self.B*5+self.C), bias=True)
         )
     def forward(self, x):
         x = self.features(x)
