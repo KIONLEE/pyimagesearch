@@ -563,7 +563,7 @@ def decoder(grid):
     grid_class = grid[:,:,B*5:] # [S, S, C]
     grid_class = grid_class.repeat([1,1,B]).reshape([-1, C]) # [S x S x B, C]
 
-    # # compute class scores for filtering out lower ones
+    # compute class scores for filtering out lower ones
     score_threshold = 0.2
     class_score_all = grid_class * grid_coord_ltrb[:,4].unsqueeze(-1) # [S x S x B, C]
     class_score_all[class_score_all < score_threshold] = 0 # set zero if score < score_threshold
@@ -571,9 +571,9 @@ def decoder(grid):
     # NMS among bboxes by classes
     class_scores = []
     for c in range(C):
-        if np.count_nonzero(class_score_all[:,c]) == 0:
+        if np.count_nonzero(class_score_all[:,c]) == 0: # if all class score are zero, then pass
             continue
-        keep_dim = NMS(bboxes_all, class_score_all[:, c], threshold=0.35) # Non Max Suppression
+        keep_dim = NMS(bboxes_all, class_score_all[:, c], threshold=0.35) # Non Max Suppression for each classes
         bboxes.append(bboxes_all[keep_dim].reshape([-1, 4]))
         probs.append(probs_all[keep_dim])
         class_scores.append(class_score_all[keep_dim])
@@ -584,10 +584,10 @@ def decoder(grid):
     # select bboxes to draw by class score values
     for b in range(len(bboxes)):
         for (bb, prob, cs) in zip(bboxes[b], probs[b], class_scores[b]):
-            if np.count_nonzero(cs) == 0:
+            if np.count_nonzero(cs) == 0: # if there is no non-zero class score, then pass
                 continue
             score, class_idx = torch.max(cs, 0)
-            if score > 0:
+            if score > 0: # only count the case where each predicted label class has non-zero score 
                 bboxes_decoded.append(bb)
                 probs_decoded.append(prob)
                 class_idxs_decoded.append(class_idx)
@@ -599,7 +599,7 @@ def decoder(grid):
 
     else:
         # list of tensors -> tensors
-        if len(bboxes_decoded) == 1:
+        if len(bboxes_decoded) == 1: # if only one box was detected
             bboxes_decoded = torch.stack(bboxes_decoded)
             probs_decoded = torch.stack(probs_decoded)
             class_idxs_decoded = torch.stack(class_idxs_decoded)
