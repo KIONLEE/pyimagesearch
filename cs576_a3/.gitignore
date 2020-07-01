@@ -8,3 +8,5 @@ __pycache__
 /logs
 /checkpoints
 *.jpg
+mg_loss.py
+nohup.*

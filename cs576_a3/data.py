@@ -73,20 +73,21 @@ class VOCDetection(Dataset):
     def __len__(self):
         return len(self.boxes)
 
-    def encoder(self,boxes,labels):
+    def encoder(self,boxes,labels): # boxes => [x1, y1, x2, y2]
         grid_num = int(self.image_size / 32) 
         target = torch.zeros((grid_num,grid_num,30))
         cell_size = 1./grid_num
-        wh = boxes[:,2:]-boxes[:,:2]
-        cxcy = (boxes[:,2:]+boxes[:,:2])/2
+        wh = boxes[:,2:]-boxes[:,:2] # 실제 이미지 크기 기준
+        cxcy = (boxes[:,2:]+boxes[:,:2])/2 # [cx, cy]
         for i in range(cxcy.size()[0]):
             cxcy_sample = cxcy[i]
-            ij = (cxcy_sample/cell_size).ceil()-1 
+            ij = (cxcy_sample/cell_size).ceil()-1  # grid cell의 indices in target.size()
             target[int(ij[1]),int(ij[0]),4] = 1
             target[int(ij[1]),int(ij[0]),9] = 1
             target[int(ij[1]),int(ij[0]),int(labels[i])+9] = 1
-            xy = ij*cell_size 
-            delta_xy = (cxcy_sample -xy)/cell_size
+            xy = ij*cell_size # 실제 이미지 상에서의 각 cell의 left-top 위치
+            # cell 하나의 크기에 대한 상대 위치 : ( (실제 이미지에서의 box 중심) - (실제 이미지에서의 해당 셀의 left-top 위치) ) / cell_size
+            delta_xy = (cxcy_sample -xy)/cell_size 
             target[int(ij[1]),int(ij[0]),2:4] = wh[i]
             target[int(ij[1]),int(ij[0]),:2] = delta_xy
             target[int(ij[1]),int(ij[0]),7:9] = wh[i]
