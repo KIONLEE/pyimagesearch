@@ -1,0 +1,12 @@
+/assets
+/weights
+*.zip
+/dataset
+/test_images
+.vscode
+__pycache__
+/logs
+/checkpoints
+*.jpg
+mg_loss.py
+nohup.*
