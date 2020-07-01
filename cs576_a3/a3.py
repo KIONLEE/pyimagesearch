@@ -556,8 +556,8 @@ def decoder(grid):
         # transform xy coordinates to be normalized in image-size.
         tensor_ltrb = torch.zeros_like(_tensor)
         for i in range(0, _tensor.shape[0], B):
-            cell_x0 = int(i/B) % 7
-            cell_y0 = int(i/B) // 7 # j
+            cell_x0 = int(i/B) % S
+            cell_y0 = int(i/B) // S # j
             # print("cell_y0x0:", i, (cell_y0, cell_x0), _tensor[i])
             # print("cell_y0x02:", i, (cell_y0, cell_x0), _tensor[i+1])
             abs_cell_x0y0 = torch.FloatTensor([cell_x0, cell_y0]) * cell_size # as a reverse of encoder, the left-top coordinates of this cell normalized in image-size
