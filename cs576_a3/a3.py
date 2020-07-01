@@ -581,7 +581,6 @@ def decoder(grid):
     grid_coord = grid[:,:,:B*5].reshape([-1, 5]) # [S x S x B, 5], 5=len([x, y, w, h, conf])
     grid_coord_abs_ltrb = rel_center_to_abs_ltrb(grid_coord) # [S x S x B, 5], 5=len([x1, y1, x2, y2, conf]) in real image-size
     bboxes_all = grid_coord_abs_ltrb[:,:4] # [S X S X B, 4], we only need (left_top_x, left_top_y, right_bottom_x, right_bottom_y) for each boxes
-    probs_all = grid_coord_abs_ltrb[:,4] # [S X S X B]
 
     # extract class probabilities
     grid_class = grid[:,:,B*5:] # [S, S, C]
@@ -599,7 +598,6 @@ def decoder(grid):
             continue
         keep_dim = NMS(bboxes_all, class_score_all[:, c], threshold=0.35) # Non Max Suppression for each classes
         bboxes.append(bboxes_all[keep_dim].reshape([-1, 4]))
-        probs.append(probs_all[keep_dim])
         class_scores.append(class_score_all[keep_dim])
 
     bboxes_decoded = []
@@ -607,13 +605,13 @@ def decoder(grid):
     class_idxs_decoded = []
     # select bboxes to draw by class score values
     for b in range(len(bboxes)):
-        for (bb, prob, cs) in zip(bboxes[b], probs[b], class_scores[b]):
+        for (bb, cs) in zip(bboxes[b], class_scores[b]):
             if np.count_nonzero(cs) == 0: # if there is no non-zero class score, then pass
                 continue
             score, class_idx = torch.max(cs, 0)
             if score > 0: # only count the case where each predicted label class has non-zero score
                 bboxes_decoded.append(bb)
-                probs_decoded.append(prob * score)
+                probs_decoded.append(score)
                 class_idxs_decoded.append(class_idx)
 
     if len(bboxes_decoded) == 0: # Any box was not detected
