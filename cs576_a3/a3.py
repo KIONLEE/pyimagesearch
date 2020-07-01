@@ -577,7 +577,7 @@ def decoder(grid):
     # grid : [S, S, Bx5+C] = [7, 7, 30]
     grid = grid.squeeze().cpu().data
     
-    # extract coordinates and confidences
+    # extract coordinates
     grid_coord = grid[:,:,:B*5].reshape([-1, 5]) # [S x S x B, 5], 5=len([x, y, w, h, conf])
     grid_coord_ltrb = rel_center_to_abs_ltrb(grid_coord) # [S x S x B, 5], 5=len([x1, y1, x2, y2, conf]) in real image-size
 
@@ -613,7 +613,7 @@ def decoder(grid):
 
     # select bboxes to draw
     bboxes_nms, class_nms, probs_nms = bboxes[keep_dim], class_idxs[keep_dim], probs[keep_dim]
-    mask_prob = (probs_nms > 0.1)
+    mask_prob = (probs_nms > 0.1) # i choosed the threshold as 0.1 here, but it could be different
     probs_nms = probs_nms[mask_prob]
     class_nms = class_nms[mask_prob]
     mask_prob = mask_prob.unsqueeze(-1).expand_as(bboxes_nms)
