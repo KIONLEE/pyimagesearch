@@ -553,7 +553,7 @@ def decoder(grid):
         # As in encoder function, both w,h are in image-size and both x,y are in cell-size
         cell_size = 1./S
 
-        # denormalized xy coordinates
+        # transform xy coordinates to be normalized in image-size.
         tensor_ltrb = torch.zeros_like(_tensor)
         for i in range(0, _tensor.shape[0], B):
             cell_x0 = int(i/B) % 7
