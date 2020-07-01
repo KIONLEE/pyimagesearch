@@ -209,9 +209,10 @@ class Loss(nn.Module):
                 tensor_ltrb (Tensor) : for computing iou, sized [filtered x B, 5] where we have 'filtered' cells vary in context, 5=len([x1, y1, x2, y2, conf]).
             """
             tensor_ltrb = torch.zeros_like(_tensor).to(device)
-            # tensor_ltrb = Variable(torch.FloatTensor(_tensor.size())).zero_()
-            tensor_ltrb[:, :2] = _tensor[:, :2] - _tensor[:, 2:4] * .5 # compute x1, y1
-            tensor_ltrb[:, 2:4] = _tensor[:, :2] + _tensor[:, 2:4] * .5 # compute x2, y2
+            # As in encoder function, both w,h are in image-size and both x,y are in cell-size
+            cell_size = 1./self.S
+            tensor_ltrb[:, :2] = _tensor[:, :2] * cell_size - _tensor[:, 2:4] * .5 # compute x1, y1
+            tensor_ltrb[:, 2:4] = _tensor[:, :2] * cell_size + _tensor[:, 2:4] * .5 # compute x2, y2
             tensor_ltrb[:,4] = _tensor[:,4] # pass conf
             return tensor_ltrb
 
@@ -235,6 +236,9 @@ class Loss(nn.Module):
         # mask for the bounding boxes which is resposible for the ground truth.
         mask_resp = torch.ByteTensor(pred_tensor_obj_bb.size()).to(device)
         mask_resp.zero_()
+        
+        # gather iou for loss_obj
+        target_tensor_obj_iou = torch.zeros_like(target_tensor_obj_bb).to(device)
 
         for i in range(0, target_tensor_obj_bb.shape[0], self.B):
             # preprocess
@@ -245,14 +249,16 @@ class Loss(nn.Module):
 
             # compute iou
             iou = self.compute_iou(pred_bb_ltrb[:, :4], target_bb_ltrb[0, :4].unsqueeze(0)) # [B, 1], target has duplicate ground truth as in encoder function in data.py
-            _, bb_resp_idx = iou.max(0) # choose maximum iou as resposible
+            bb_resp_iou, bb_resp_idx = iou.max(0) # choose maximum iou as resposible
 
             # update
             mask_resp[i+bb_resp_idx] = 1
+            target_tensor_obj_iou[i+bb_resp_idx, 4] = bb_resp_iou.to(device)
 
         # --- compute each loss ---
         pred_resp = pred_tensor_obj_bb[mask_resp].reshape([-1, 5])
         target_resp = target_tensor_obj_bb[mask_resp].reshape([-1, 5])
+        target_resp_iou = target_tensor_obj_iou[mask_resp].reshape([-1, 5]) # conf = P(Obj) * IOU(pred, truth)
 
         # 1. loss_xy
         loss_xy = torch.sum((target_resp[:, :2] - pred_resp[:, :2])**2) / batch_size
@@ -261,7 +267,7 @@ class Loss(nn.Module):
         loss_wh = torch.sum((torch.sqrt(target_resp[:, 2:4]) - torch.sqrt(pred_resp[:, 2:4]))**2) / batch_size
 
         # 3. loss_obj
-        loss_obj = torch.sum((target_resp[:, 4] - pred_resp[:, 4])**2) / batch_size
+        loss_obj = torch.sum((target_resp_iou[:, 4] - pred_resp[:, 4])**2) / batch_size
 
         # 4. loss_noobj
         # I decided to consider both 'conf' for this loss, as discussed with TA in http://klms.kaist.ac.kr/mod/ubboard/article.php?id=352893&bwid=192633
@@ -536,26 +542,48 @@ def decoder(grid):
     B = 2
     C = 20
 
-    def center_to_ltrb(_tensor):
-        """ Transform tensor from 'center' to 'left-top, right-bottom'
+    def rel_center_to_abs_ltrb(_tensor):
+        """ Transform tensor from relative 'center' to absolute 'left-top, right-bottom' in image-size.
 
         Args:
-            _tensor (Tensor) : original, sized [filtered x B, 5], 5=len([x, y, w, h, conf]).
+            _tensor (Tensor) : original, sized [S x S x B, 5], 5=len([x, y, w, h, conf]).
         Returns:
-            tensor_ltrb (Tensor) : for computing iou, sized [filtered x B, 5] where we have 'filtered' cells vary in context, 5=len([x1, y1, x2, y2, conf]).
+            tensor_abs_ltrb (Tensor) : sized [S x S x B, 5] where we have 'filtered' cells vary in context, 5=len([x1, y1, x2, y2, conf]) in real image-size.
         """
+        # As in encoder function, both w,h are in image-size and both x,y are in cell-size
+        cell_size = 1./S
+
+        # denormalized xy coordinates
         tensor_ltrb = torch.zeros_like(_tensor)
-        tensor_ltrb[:, :2] = _tensor[:, :2] - _tensor[:, 2:4] * .5 # compute x1, y1
-        tensor_ltrb[:, 2:4] = _tensor[:, :2] + _tensor[:, 2:4] * .5 # compute x2, y2
-        tensor_ltrb[:,4] = _tensor[:,4] # pass conf
-        return tensor_ltrb
+        for i in range(0, _tensor.shape[0], B):
+            cell_x0 = int(i/B) % 7
+            cell_y0 = int(i/B) // 7 # j
+            # print("cell_y0x0:", i, (cell_y0, cell_x0), _tensor[i])
+            # print("cell_y0x02:", i, (cell_y0, cell_x0), _tensor[i+1])
+            # as a reverse of encoder, the left-top coordinates of this cell in image-size
+            abs_cell_x0y0 = torch.FloatTensor([cell_x0, cell_y0]) * cell_size
+            tensor_ltrb[i:i+2, :2] = _tensor[i:i+2, :2] * cell_size + abs_cell_x0y0
+            tensor_ltrb[i:i+2, 2:4] = _tensor[i:i+2, 2:4] # w,h are already in image-size
+            tensor_ltrb[i:i+2, 4] = _tensor[i:i+2, 4] # pass conf
+        
+        # compute x1, y1, x2, y2 based on denormalized coordinate to image-size
+        tensor_ltrb[:, :2] = tensor_ltrb[:, :2] - tensor_ltrb[:, 2:4] * .5 # compute x1, y1
+        tensor_ltrb[:, 2:4] = tensor_ltrb[:, :2] + tensor_ltrb[:, 2:4] * .5 # compute x2, y2
+        
+        return tensor_ltrb # abs_ltrb
+
+    # for i in range(S):
+    #     for j in range(S):
+    #         print("ji:", (j,i))
+    #         print(grid[j, i, :5])
+    #         print(grid[j, i, 5:5*B])
 
     # grid : [S, S, Bx5+C] = [7, 7, 30]
     grid = grid.squeeze().cpu().data
     
-    # separate coordinates and confidences
+    # extract coordinates and confidences
     grid_coord = grid[:,:,:B*5].reshape([-1, 5]) # [S x S x B, 5], 5=len([x, y, w, h, conf])
-    grid_coord_ltrb = center_to_ltrb(grid_coord) # [S x S x B, 5], 5=len([x1, y1, x2, y2, conf])
+    grid_coord_ltrb = rel_center_to_abs_ltrb(grid_coord) # [S x S x B, 5], 5=len([x1, y1, x2, y2, conf]) in real image-size
 
     # making class indices
     grid_class = grid[:,:,B*5:] # [S, S, C]
