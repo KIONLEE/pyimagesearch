@@ -543,12 +543,12 @@ def decoder(grid):
     C = 20
 
     def rel_center_to_abs_ltrb(_tensor):
-        """ Transform tensor from relative 'center' to absolute 'left-top, right-bottom' in image-size.
+        """ Transform tensor from relative 'center' to absolute 'left-top, right-bottom' normalized in image-size.
 
         Args:
             _tensor (Tensor) : original, sized [S x S x B, 5], 5=len([x, y, w, h, conf]).
         Returns:
-            tensor_abs_ltrb (Tensor) : sized [S x S x B, 5] where we have 'filtered' cells vary in context, 5=len([x1, y1, x2, y2, conf]) in real image-size.
+            tensor_abs_ltrb (Tensor) : sized [S x S x B, 5] where we have 'filtered' cells vary in context, 5=len([x1, y1, x2, y2, conf]) normalized in image-size.
         """
         # As in encoder function, both w,h are in image-size and both x,y are in cell-size
         cell_size = 1./S
@@ -560,15 +560,11 @@ def decoder(grid):
             cell_y0 = int(i/B) // 7 # j
             # print("cell_y0x0:", i, (cell_y0, cell_x0), _tensor[i])
             # print("cell_y0x02:", i, (cell_y0, cell_x0), _tensor[i+1])
-            # as a reverse of encoder, the left-top coordinates of this cell in image-size
-            abs_cell_x0y0 = torch.FloatTensor([cell_x0, cell_y0]) * cell_size
-            tensor_ltrb[i:i+2, :2] = _tensor[i:i+2, :2] * cell_size + abs_cell_x0y0
-            tensor_ltrb[i:i+2, 2:4] = _tensor[i:i+2, 2:4] # w,h are already in image-size
+            abs_cell_x0y0 = torch.FloatTensor([cell_x0, cell_y0]) * cell_size # as a reverse of encoder, the left-top coordinates of this cell normalized in image-size
+            # compute x1, y1, x2, y2 normalized in image-size / w,h are already normalized in image-size
+            tensor_ltrb[i:i+2, :2] = _tensor[i:i+2, :2] * cell_size + abs_cell_x0y0 - 0.5 * _tensor[i:i+2, 2:4]
+            tensor_ltrb[i:i+2, 2:4] = _tensor[i:i+2, :2] * cell_size + abs_cell_x0y0 + 0.5 * _tensor[i:i+2, 2:4] 
             tensor_ltrb[i:i+2, 4] = _tensor[i:i+2, 4] # pass conf
-        
-        # compute x1, y1, x2, y2 based on denormalized coordinate to image-size
-        tensor_ltrb[:, :2] = tensor_ltrb[:, :2] - tensor_ltrb[:, 2:4] * .5 # compute x1, y1
-        tensor_ltrb[:, 2:4] = tensor_ltrb[:, :2] + tensor_ltrb[:, 2:4] * .5 # compute x2, y2
         
         return tensor_ltrb # abs_ltrb
 
@@ -589,17 +585,17 @@ def decoder(grid):
     grid_class = grid[:,:,B*5:] # [S, S, C]
     grid_class = grid_class.repeat([1,1,B]).reshape([-1, C]) # [S x S x B, C]
 
-    # # compute class scores for filtering out lower ones
+    # # compute class scores for filtering out lower oness
     # score_threshold=0.2
     # class_scores = grid_class * grid_coord_ltrb[:,4].unsqueeze(-1) # [S x S x B, C]
     # class_scores[class_scores < score_threshold] = 0 # set zero if score < score_threshold
 
     # get class indicies
-    grid_class_idxs = grid_class.argmax(-1) # choose the highest score as final prediction
+    grid_class_scores, grid_class_idxs = torch.max(grid_class, -1) # choose the highest score as final prediction
     
     # update results
     bboxes.append(grid_coord_ltrb[:,:4]) # [S X S X B, 4], we only need (left_top_x, left_top_y, right_bottom_x, right_bottom_y) for each boxes
-    probs.append(grid_coord_ltrb[:,4]) # [S X S X B]
+    probs.append(grid_class_scores * grid_coord_ltrb[:,4]) # [S X S X B]
     class_idxs.append(grid_class_idxs) # [S X S X B]
 
     if len(bboxes) == 0: # Any box was not detected
@@ -617,7 +613,7 @@ def decoder(grid):
 
     # select bboxes to draw
     bboxes_nms, class_nms, probs_nms = bboxes[keep_dim], class_idxs[keep_dim], probs[keep_dim]
-    mask_prob = (probs_nms > 0.35)
+    mask_prob = (probs_nms > 0.1)
     probs_nms = probs_nms[mask_prob]
     class_nms = class_nms[mask_prob]
     mask_prob = mask_prob.unsqueeze(-1).expand_as(bboxes_nms)
