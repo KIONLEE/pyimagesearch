@@ -608,18 +608,21 @@ def decoder(grid):
         bboxes = torch.stack(bboxes).squeeze()
         probs = torch.stack(probs).squeeze()
         class_idxs = torch.stack(class_idxs).squeeze()
+      
+    # filtering bboxes which have lower class score
+    mask_prob = (probs > 0.1) # i choosed the threshold on my own, but it could be different based on http://klms.kaist.ac.kr/mod/ubboard/article.php?id=352893&bwid=193831
+    probs = probs[mask_prob]
+    class_idxs = class_idxs[mask_prob]
+    mask_prob = mask_prob.unsqueeze(-1).expand_as(bboxes)
+    bboxes = bboxes[mask_prob].reshape([-1, 4])
 
     keep_dim = NMS(bboxes, probs, threshold=0.35) # Non Max Suppression
 
-    # select bboxes to draw
-    bboxes_nms, class_nms, probs_nms = bboxes[keep_dim], class_idxs[keep_dim], probs[keep_dim]
-    mask_prob = (probs_nms > 0.1) # i choosed the threshold as 0.1 here, but it could be different
-    probs_nms = probs_nms[mask_prob]
-    class_nms = class_nms[mask_prob]
-    mask_prob = mask_prob.unsqueeze(-1).expand_as(bboxes_nms)
-    bboxes_nms = bboxes_nms[mask_prob].reshape([-1, 4])
+    bboxes_decoded = bboxes[keep_dim]
+    probs_decoded = probs[keep_dim]
+    class_idxs_decoded = class_idxs[keep_dim]
 
-    return bboxes_nms, class_nms, probs_nms
+    return bboxes_decoded, class_idxs_decoded, probs_decoded
 
 test_image_dir = 'test_images'
 image_path_list = [os.path.join(test_image_dir, path) for path in os.listdir(test_image_dir)]
